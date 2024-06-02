@@ -12,6 +12,8 @@ using Oceananigans.ImmersedBoundaries: mask_immersed_field!, immersed_cell
 
 using KernelAbstractions: @kernel, @index
 
+using Statistics: sum
+
 import Oceananigans.Solvers: precondition!, solve!, build_preconditioner
 import Oceananigans.Models.NonhydrostaticModels: solve_for_pressure!
 using LinearAlgebra
@@ -44,7 +46,13 @@ function precondition!(p, solver::FFTBasedPoissonSolver, rhs, args...)
             fft_preconditioner_right_hand_side!,
             solver.storage, rhs)
 
-    return solve!(p, solver, solver.storage)
+    p = solve!(p, solver, solver.storage)
+
+    p .+= inv(get_m0(grid)) * mean_in_underlying_grid(rhs)
+
+    mask_immersed_field!(p)
+
+    return p
 end
 
 build_preconditioner(p::FFTBasedPoissonSolver, A, settings) = p
@@ -160,6 +168,16 @@ end
     @inbounds ∇²ϕ[i, j, k] = laplacianᶜᶜᶜ(i, j, k, grid, ϕ)
 end
 
+# Here, we make m0 the same order as the eigenvalues of A
+@inline function get_m0(grid)
+    return -1 / (grid.Lx * grid.Ly + grid.Ly * grid.Lz + grid.Lz * grid.Lx)
+end
+
+@inline function mean_in_underlying_grid(ϕ)
+    grid = ϕ.grid
+    return sum(ϕ) / (grid.Nx * grid.Ny * grid.Nz)
+end
+
 function compute_laplacian!(∇²ϕ, ϕ)
     grid = ϕ.grid
     arch = architecture(grid)
@@ -167,6 +185,10 @@ function compute_laplacian!(∇²ϕ, ϕ)
     fill_halo_regions!(ϕ)
 
     launch!(arch, grid, :xyz, laplacian!, ∇²ϕ, grid, ϕ)
+
+    ∇²ϕ .+= get_m0(grid) * mean_in_underlying_grid(ϕ)
+
+    mask_immersed_field!(∇²ϕ)
 
     return nothing
 end
